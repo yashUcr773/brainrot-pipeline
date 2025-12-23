@@ -1,6 +1,6 @@
 FROM python:3.10
 
-WORKDIR /app
+WORKDIR /tts
 
 RUN pip install --upgrade pip
 RUN pip install coqui-tts
@@ -11,8 +11,5 @@ COPY . .
 
 CMD ["bash"]
 
-# docker build -t tts .
-# docker run -it --rm --gpus all -v ${PWD}/app:/app tts
-
-# python --version
-# tts --list_models
+# docker build --file dockerfile.tts -t tts .
+# docker run -it --rm --gpus all -v ${PWD}/tts:/tts tts
