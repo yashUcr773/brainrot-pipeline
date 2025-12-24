@@ -1,0 +1,17 @@
+{
+  "recommendations": [
+    "aaron-bond.better-comments",
+    "formulahendry.code-runner",
+    "ms-azuretools.vscode-containers",
+    "ms-vscode-remote.remote-containers",
+    "ms-azuretools.vscode-docker",
+    "docker.docker",
+    "dbaeumer.vscode-eslint",
+    "eamodio.gitlens",
+    "yandeu.five-server",
+    "esbenp.prettier-vscode",
+    "bradlc.vscode-tailwindcss",
+    "chakrounanas.turbo-console-log",
+    "vue.volar"
+  ],
+}
