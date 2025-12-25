@@ -1,0 +1,18 @@
+FROM python:3.10
+
+WORKDIR /app
+
+RUN pip install --upgrade pip
+RUN pip install torchaudio
+
+COPY /chatterbox-repo /app/chatterbox-repo
+
+RUN cd chatterbox-repo && pip install -e .
+
+COPY /tts /app/tts
+
+CMD ["sh"]
+
+# docker build -t chatterbox-tts .
+# docker run -it --rm -v ${PWD}/tts:/app/tts chatterbox-tts /bin/bash
+# pip install -e .
