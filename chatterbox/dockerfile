@@ -14,5 +14,4 @@ COPY /tts /app/tts
 CMD ["sh"]
 
 # docker build -t chatterbox-tts .
-# docker run -it --rm -v ${PWD}/tts:/app/tts chatterbox-tts /bin/bash
-# pip install -e .
+# docker run -it --rm --gpus all -v ${PWD}/tts:/app/tts chatterbox-tts /bin/bash

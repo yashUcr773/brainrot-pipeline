@@ -1,31 +1,22 @@
 
 import torchaudio as ta
+import torch
+
 from chatterbox.tts import ChatterboxTTS
 # from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
+
 # English example
-model = ChatterboxTTS.from_pretrained(device="cpu")
+model = ChatterboxTTS.from_pretrained(device=device)
 
-text = """[emotion: subdued_sadness | intensity: low | pace: slow]
-The last message my mother sent me was simple. Did you eat.
-I read it too late.
+text = """
+The last message my mother sent me was simple. Did you eat. I read it too late. Grief did not arrive loudly. It settled, heavy and patient, changing how silence sounded. At the funeral, people spoke gently. I nodded. Something essential had already left. Days later, I cooked her recipe and failed. The taste was wrong, but familiar. I ate anyway. Now, when I eat alone, I answer her. Yes.
+"""
 
-[emotion: quiet_grief | intensity: medium | pace: slow]
-Grief did not arrive loudly. It settled, heavy and patient, changing how silence sounded.
-
-[emotion: reflective | intensity: medium | pace: steady]
-At the funeral, people spoke gently. I nodded. Something essential had already left.
-
-[emotion: restrained_longing | intensity: medium | pace: slow]
-Days later, I cooked her recipe and failed. The taste was wrong, but familiar.
-
-[emotion: acceptance | intensity: low | pace: calm]
-I ate anyway.
-
-[emotion: tender_resolution | intensity: low | pace: slow]
-Now, when I eat alone, I answer her. Yes."""
-wav = model.generate(text, exaggeration=0.7,cfg_weight=0.3)
-ta.save("test-english2.wav", wav, model.sr)
+wav = model.generate(text, exaggeration=0.6, cfg_weight=0.1,)
+ta.save("test-english3.wav", wav, model.sr)
 
 # # Multilingual examples
 # multilingual_model = ChatterboxMultilingualTTS.from_pretrained(device=device)
