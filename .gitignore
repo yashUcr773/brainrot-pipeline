@@ -1,5 +1,4 @@
 outputs/
-scripts/
-temp/
+input/
 node_modules/
 .env

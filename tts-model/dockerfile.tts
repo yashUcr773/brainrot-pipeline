@@ -5,7 +5,7 @@ WORKDIR /tts
 RUN pip install --upgrade pip
 RUN pip install coqui-tts
 
-RUN RUN apt-get update && apt-get install -y espeak-ng && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y espeak-ng && rm -rf /var/lib/apt/lists/*
 
 COPY . .
 

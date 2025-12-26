@@ -24,5 +24,5 @@ speakers = [
 line = "Hello, this is a sample voice used to compare clarity, tone, and pronunciation."
 
 for speaker in speakers:
-    tts.tts_to_file(text=line, speaker=speaker, file_path=f"outputs/output_{speaker}.wav")
+    tts.tts_to_file(text=line, speaker=speaker, emotions="neutral", speed=1.0, file_path=f"outputs/speakers/output_{speaker}.wav")
 
