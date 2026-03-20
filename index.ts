@@ -38,6 +38,12 @@ async function getRawContent(subs: string[]): Promise<RawContent> {
         throw new Error('Subreddit list is empty');
     }
 
+    const dirPath = `${ROOT_ASSETS_PATH}/rawContent`;
+
+    if (!fs.existsSync(dirPath)) {
+        fs.mkdirSync(dirPath, { recursive: true });
+    }
+
     try {
         // Fetch 5 posts per subreddit in parallel
         const responses = await Promise.all(
@@ -56,6 +62,8 @@ async function getRawContent(subs: string[]): Promise<RawContent> {
             (res) => res?.data?.data?.children?.map((c: any) => c.data) || [],
         );
 
+        fs.writeFileSync(`${dirPath}/allPosts.json`, JSON.stringify(allPosts, null, 2), 'utf-8');
+
         // Filter good content
         const filteredPosts = allPosts.filter((post) => {
             return (
@@ -66,19 +74,30 @@ async function getRawContent(subs: string[]): Promise<RawContent> {
             );
         });
 
+        fs.writeFileSync(
+            `${dirPath}/filteredPosts.json`,
+            JSON.stringify(filteredPosts, null, 2),
+            'utf-8',
+        );
+
         if (!filteredPosts.length) {
             throw new Error('No suitable posts found');
         }
 
         // Sort by score (descending)
         filteredPosts.sort((a, b) => b.score - a.score);
-
-        fs.writeFileSync('./filteredPosts.json', JSON.stringify(filteredPosts, null, 2), 'utf-8');
+        fs.writeFileSync(
+            `${dirPath}/sortedFilteredPosts.json`,
+            JSON.stringify(filteredPosts, null, 2),
+            'utf-8',
+        );
 
         // Pick from top 3 randomly (adds variety)
         const topN = filteredPosts.slice(0, 3);
+        fs.writeFileSync(`${dirPath}/topN.json`, JSON.stringify(topN, null, 2), 'utf-8');
         const bestPost = topN[Math.floor(Math.random() * topN.length)];
 
+        fs.writeFileSync(`${dirPath}/bestPost.json`, JSON.stringify(bestPost, null, 2), 'utf-8');
         return {
             subreddit: bestPost.subreddit_name_prefixed,
             title: bestPost.title,
