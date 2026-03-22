@@ -190,7 +190,6 @@ function generateSentencesFromContent(sanitizedContent: RawContent): Sentence[] 
     const credits = `Posted by u/${sanitizedContent.author} on ${sanitizedContent.subreddit}.`;
 
     const sentences = sanitizedContent.content
-        .replace(/([.!?])(?=[A-Z])/g, '$1\n')
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
@@ -201,6 +200,59 @@ function generateSentencesFromContent(sanitizedContent: RawContent): Sentence[] 
         id: i,
         text,
     }));
+}
+
+function enhanceForTTS(sentences: Sentence[]): Sentence[] {
+    function addHook(text: string, index: number): string {
+        if (index !== 2) return text;
+
+        const hooks = [
+            "So, here's what happened.",
+            'Okay, this is wild.',
+            'Alright, listen to this.',
+            'This might sound crazy, but',
+        ];
+
+        const hook = hooks[Math.floor(Math.random() * hooks.length)];
+        return `${hook} ${text}`;
+    }
+
+    function addPauses(text: string): string {
+        return text
+            .replace(/\bbut\b/gi, ', but')
+            .replace(/\bso\b/gi, ', so')
+            .replace(/\bthen\b/gi, ', then')
+            .replace(/ and /gi, ', and ')
+            .replace(/\./g, '. ')
+            .replace(/\?/g, '? ')
+            .replace(/!/g, '! ');
+    }
+
+    function addEmotion(text: string): string {
+        return text
+            .replace(/\bI was shocked\b/gi, 'I was honestly shocked')
+            .replace(/\bI was angry\b/gi, 'I was really angry')
+            .replace(/\bI don't know\b/gi, "I genuinely don't know")
+            .replace(/\bit was weird\b/gi, 'it was really weird');
+    }
+
+    function addStoryFlow(text: string): string {
+        return text.replace(/\bSuddenly\b/g, 'And then suddenly').replace(/\bThen\b/g, 'And then');
+    }
+
+    return sentences.map((sentence, index) => {
+        let text = sentence.text;
+
+        text = addHook(text, index);
+        text = addEmotion(text);
+        text = addStoryFlow(text);
+        text = addPauses(text);
+
+        return {
+            ...sentence,
+            text,
+        };
+    });
 }
 
 async function main() {
@@ -224,6 +276,13 @@ async function main() {
     fs.writeFileSync(
         contentPath,
         JSON.stringify({ rawContent, sanitizedContent, sentences }, null, 2),
+        'utf-8',
+    );
+
+    const enhancedSentences = enhanceForTTS(sentences);
+    fs.writeFileSync(
+        contentPath,
+        JSON.stringify({ rawContent, sanitizedContent, sentences, enhancedSentences }, null, 2),
         'utf-8',
     );
 }
