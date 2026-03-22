@@ -560,6 +560,108 @@ def group_words_into_chunks(words, words_per_chunk=5):
 
 
 # =========================
+# STEP 6: ASS SUBTITLE GENERATION
+# =========================
+
+def _ass_timestamp(seconds):
+    """Convert seconds to ASS timestamp format H:MM:SS.cc"""
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _ass_color(hex_rgb):
+    """Convert #RRGGBB to ASS color &HBBGGRR& format."""
+    r = hex_rgb[1:3]
+    g = hex_rgb[3:5]
+    b = hex_rgb[5:7]
+    return f"&H{b}{g}{r}&"
+
+
+# Style config — easy to tweak
+SUB_FONT = "Arial"
+SUB_FONTSIZE_NORMAL = 48
+SUB_FONTSIZE_HIGHLIGHT = 58
+SUB_COLOR_NORMAL = "#FFFFFF"      # white
+SUB_COLOR_HIGHLIGHT = "#FFFF00"   # yellow
+SUB_COLOR_OUTLINE = "#000000"     # black outline
+SUB_OUTLINE_WIDTH = 3
+SUB_MARGIN_BOTTOM = 60
+
+
+def generate_ass_subtitles(chunks, output_path, video_width=1080, video_height=1920):
+    """
+    Generate an ASS subtitle file with word-by-word highlighting.
+
+    For each word in each chunk, creates a dialogue line showing the full
+    chunk text with the current word in yellow/bold/bigger and rest in white.
+    """
+    print(f"\n📝 Step 6: Generating ASS subtitles...")
+
+    normal_color = _ass_color(SUB_COLOR_NORMAL)
+    highlight_color = _ass_color(SUB_COLOR_HIGHLIGHT)
+    outline_color = _ass_color(SUB_COLOR_OUTLINE)
+
+    # ASS header
+    header = f"""[Script Info]
+Title: TikTok Narration Subtitles
+ScriptType: v4.00+
+PlayResX: {video_width}
+PlayResY: {video_height}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,{SUB_FONT},{SUB_FONTSIZE_NORMAL},{normal_color},&H000000FF&,{outline_color},&H80000000&,-1,0,0,0,100,100,0,0,1,{SUB_OUTLINE_WIDTH},0,2,40,40,{SUB_MARGIN_BOTTOM},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+    dialogue_lines = []
+
+    for chunk in chunks:
+        words = chunk["words"]
+
+        for i, active_word in enumerate(words):
+            # Build the line with current word highlighted
+            parts = []
+            for j, w in enumerate(words):
+                if j == i:
+                    # Highlighted: yellow, bold, bigger
+                    parts.append(
+                        f"{{\\b1\\fs{SUB_FONTSIZE_HIGHLIGHT}"
+                        f"\\c{highlight_color}"
+                        f"\\3c{outline_color}}}"
+                        f"{w['word']}"
+                        f"{{\\r}}"
+                    )
+                else:
+                    # Normal: white
+                    parts.append(w["word"])
+
+            text = " ".join(parts)
+            start = _ass_timestamp(active_word["start"])
+            end = _ass_timestamp(active_word["end"])
+
+            dialogue_lines.append(
+                f"Dialogue: 0,{start},{end},Default,,0,0,0,,{text}"
+            )
+
+    # Write ASS file
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(header)
+        for line in dialogue_lines:
+            f.write(line + "\n")
+
+    print(f"   Lines: {len(dialogue_lines)}")
+    print(f"   ✅ Saved: {output_path}")
+
+    return output_path
+
+
+# =========================
 # MAIN
 # =========================
 
@@ -572,18 +674,18 @@ def main():
     content_path = os.path.join(dir_path, CONTENT_PATH)
 
     # Uncomment to fetch live from Reddit:
-    # rawContent = get_raw_content(REDDIT_SUBS)
-    # with open(content_path, "w", encoding="utf-8") as f:
-    #     json.dump(rawContent, f, indent=2)
+    rawContent = get_raw_content(REDDIT_SUBS)
+    with open(content_path, "w", encoding="utf-8") as f:
+        json.dump(rawContent, f, indent=2)
 
-    rawContent = {
-        "subreddit": "r/TrueOffMyChest",
-        "title": "My dad's best friend probably saved my life today and I'm so freaking grateful for it",
-        "content": "Earlier today I was walking home from school when uncle George passed by in his car, he saw me and he told me to get in, he's not my biological uncle but he's my dad's childhood best friend and he's always been uncle for us, it was hot as fuck today so I got in.\n\nNow my house has two different entrances, one that i normally walk to and one that you drive to in the back, when we got to the back we found a white van parked outside and he told me to wait, none of my parent's cars were home and there were sounds coming from inside, I'm the youngest of my siblings and the only one living at home so honestly it was scary as fuck. Uncle George called the police while I called my dad, 10 minutes later which felt like an eternity the cops showed up and there were 4 guys inside the house and they were stealing, the van was full of our stuff, thankfully we got to keep everything but I was honestly still scared, they were all so much bigger than me, usually when im walking i have my earbuds on playing music so I wouldn't have noticed anything and would have walked straight to them and god knows what would have happened. \n\nI literally could have been raped or even killed if it wasn't for him. I kept thanking him over and over again and dad thanked him as well and he was like it's not a big deal.",
-        "author": "Scary-Grapefruit-988",
-        "url": "https://www.reddit.com/r/TrueOffMyChest/comments/1rzj2pc/my_dads_best_friend_probably_saved_my_life_today/",
-        "score": 2125,
-    }
+    # rawContent = {
+    #     "subreddit": "r/TrueOffMyChest",
+    #     "title": "My dad's best friend probably saved my life today and I'm so freaking grateful for it",
+    #     "content": "Earlier today I was walking home from school when uncle George passed by in his car, he saw me and he told me to get in, he's not my biological uncle but he's my dad's childhood best friend and he's always been uncle for us, it was hot as fuck today so I got in.\n\nNow my house has two different entrances, one that i normally walk to and one that you drive to in the back, when we got to the back we found a white van parked outside and he told me to wait, none of my parent's cars were home and there were sounds coming from inside, I'm the youngest of my siblings and the only one living at home so honestly it was scary as fuck. Uncle George called the police while I called my dad, 10 minutes later which felt like an eternity the cops showed up and there were 4 guys inside the house and they were stealing, the van was full of our stuff, thankfully we got to keep everything but I was honestly still scared, they were all so much bigger than me, usually when im walking i have my earbuds on playing music so I wouldn't have noticed anything and would have walked straight to them and god knows what would have happened. \n\nI literally could have been raped or even killed if it wasn't for him. I kept thanking him over and over again and dad thanked him as well and he was like it's not a big deal.",
+    #     "author": "Scary-Grapefruit-988",
+    #     "url": "https://www.reddit.com/r/TrueOffMyChest/comments/1rzj2pc/my_dads_best_friend_probably_saved_my_life_today/",
+    #     "score": 2125,
+    # }
 
     title = rawContent["title"]
     body = rawContent["content"]
@@ -663,6 +765,18 @@ def main():
     with open(os.path.join(dir_path, "05_subtitle_chunks.json"), "w", encoding="utf-8") as f:
         json.dump(chunks, f, indent=2)
 
+    # ── Step 6: ASS Subtitles ──
+    ass_9x16 = generate_ass_subtitles(
+        chunks,
+        os.path.join(dir_path, "06_subtitles_9x16.ass"),
+        video_width=1080, video_height=1920,
+    )
+    ass_16x9 = generate_ass_subtitles(
+        chunks,
+        os.path.join(dir_path, "06_subtitles_16x9.ass"),
+        video_width=1920, video_height=1080,
+    )
+
     # ── Done ──
     print(f"\n✅ Done! Output in {dir_path}/")
     print(f"   📄 01_cleaned.txt            — cleaned source text")
@@ -673,9 +787,10 @@ def main():
     print(f"   📄 03_tts_data.json          — structured data for TTS pipeline")
     print(f"   🔊 04_narration.wav          — audio narration ({voice_used})")
     print(f"   📄 04_audio_meta.json        — audio metadata")
-    print(f"   📄 04 audio path     — audio metadata", audio_path)
     print(f"   📄 05_word_timestamps.json   — per-word timing")
     print(f"   📄 05_subtitle_chunks.json   — 5-word subtitle groups")
+    print(f"   📄 06_subtitles_9x16.ass     — subtitles for TikTok/Reels")
+    print(f"   📄 06_subtitles_16x9.ass     — subtitles for YouTube")
 
 
 if __name__ == "__main__":
