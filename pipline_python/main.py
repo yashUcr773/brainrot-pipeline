@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reddit → TikTok Viral Script Pipeline
-Scrape → Clean → Rewrite (Ollama) → Format → Audio (Kokoro) → Word Timestamps (Whisper)
+Scrape → Clean → Rewrite (Ollama) → Format → Audio (Kokoro) → Timestamps (Whisper) → Subtitles → Video (FFmpeg)
 """
 
 import atexit
@@ -9,6 +9,7 @@ import json
 import os
 import random
 import re
+import shutil
 import subprocess
 import time
 
@@ -20,6 +21,9 @@ import soundfile as sf
 from kokoro import KPipeline
 
 from faster_whisper import WhisperModel
+
+import ffmpeg
+
 # =========================
 # CONFIG
 # =========================
@@ -60,10 +64,17 @@ started_by_script = False
 # =========================
 
 KOKORO_VOICES = [
-    "af_heart", "af_bella", "af_sarah", "af_nicole",
+    "af_heart", "af_bella", "af_sarah"
     "af_nova", "af_sky", "af_jessica", "af_river",
     "am_adam", "am_michael", "bm_george", "bm_lewis",
 ]
+
+# =========================
+# VIDEO CONFIG
+# =========================
+
+BACKGROUND_VIDEO_DIR = "./assets/inputs/backgrounds/subway-surfer"
+BACKGROUND_VIDEO_FILE = "ss-1.mp4"  # or None to pick random from dir
 
 
 # =========================
@@ -581,13 +592,12 @@ def _ass_color(hex_rgb):
 
 # Style config — easy to tweak
 SUB_FONT = "Arial"
-SUB_FONTSIZE_NORMAL = 48
-SUB_FONTSIZE_HIGHLIGHT = 58
+SUB_FONTSIZE_NORMAL = 64
+SUB_FONTSIZE_HIGHLIGHT = 78
 SUB_COLOR_NORMAL = "#FFFFFF"      # white
 SUB_COLOR_HIGHLIGHT = "#FFFF00"   # yellow
 SUB_COLOR_OUTLINE = "#000000"     # black outline
-SUB_OUTLINE_WIDTH = 3
-SUB_MARGIN_BOTTOM = 60
+SUB_OUTLINE_WIDTH = 4
 
 
 def generate_ass_subtitles(chunks, output_path, video_width=1080, video_height=1920):
@@ -613,7 +623,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{SUB_FONT},{SUB_FONTSIZE_NORMAL},{normal_color},&H000000FF&,{outline_color},&H80000000&,-1,0,0,0,100,100,0,0,1,{SUB_OUTLINE_WIDTH},0,2,40,40,{SUB_MARGIN_BOTTOM},1
+Style: Default,{SUB_FONT},{SUB_FONTSIZE_NORMAL},{normal_color},&H000000FF&,{outline_color},&H80000000&,-1,0,0,0,100,100,0,0,1,{SUB_OUTLINE_WIDTH},0,5,40,40,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -662,8 +672,110 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 # =========================
-# MAIN
+# STEP 7: VIDEO GENERATION (FFMPEG)
 # =========================
+
+def _get_video_duration(video_path):
+    """Get video duration in seconds using ffmpeg-python probe."""
+    probe = ffmpeg.probe(video_path)
+    return float(probe["format"]["duration"])
+
+
+def _get_background_video():
+    """Get the background video file path."""
+    if BACKGROUND_VIDEO_FILE:
+        path = os.path.join(BACKGROUND_VIDEO_DIR, BACKGROUND_VIDEO_FILE)
+    else:
+        files = [
+            f for f in os.listdir(BACKGROUND_VIDEO_DIR)
+            if f.endswith((".mp4", ".mov", ".mkv", ".webm"))
+        ]
+        if not files:
+            raise FileNotFoundError(
+                f"No video files in {BACKGROUND_VIDEO_DIR}")
+        path = os.path.join(BACKGROUND_VIDEO_DIR, random.choice(files))
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Background video not found: {path}")
+
+    return path
+
+
+def generate_video(audio_path, ass_path, dir_path, output_name, width, height):
+    """
+    Composite final video: background + subtitles + narration audio.
+    Two-step process: (A) burn subs into video, (B) merge with audio.
+    """
+
+    bg_video = _get_background_video()
+    bg_duration = _get_video_duration(bg_video)
+    audio_duration = _get_video_duration(audio_path)
+
+    max_start = max(0, bg_duration - audio_duration - 5)
+    start_time = random.uniform(0, max_start) if max_start > 0 else 0
+
+    output_path = os.path.join(dir_path, output_name)
+    target_aspect = width / height
+
+    # Copy ASS to short temp name (avoids path escaping issues)
+    temp_subs = os.path.join(dir_path, "_temp_subs.ass")
+    temp_video = os.path.join(dir_path, "_temp_video.mp4")
+    shutil.copy2(ass_path, temp_subs)
+
+    print(f"   Rendering {output_name}...")
+    print(
+        f"   Background: {os.path.basename(bg_video)} (start {start_time:.1f}s)")
+
+    start = time.time()
+
+    # Step A: Video + subtitles (no audio)
+    cmd_video = [
+        "ffmpeg", "-y",
+        "-ss", str(round(start_time, 2)),
+        "-t", str(round(audio_duration + 0.5, 2)),
+        "-i", bg_video,
+        "-filter_complex",
+        f"[0:v]crop=ih*{target_aspect}:ih:(iw-ih*{target_aspect})/2:0,scale={width}:{height},ass={temp_subs}[v]",
+        "-map", "[v]",
+        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-an",
+        temp_video,
+    ]
+
+    result = subprocess.run(cmd_video, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"   ❌ FFmpeg Step A error:\n{result.stderr[-500:]}")
+        for f in [temp_subs, temp_video]:
+            if os.path.exists(f):
+                os.remove(f)
+        return None
+
+    # Step B: Merge with audio
+    cmd_merge = [
+        "ffmpeg", "-y",
+        "-i", temp_video,
+        "-i", audio_path,
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-movflags", "+faststart",
+        output_path,
+    ]
+
+    result = subprocess.run(cmd_merge, capture_output=True, text=True)
+
+    # Clean up temp files
+    for f in [temp_subs, temp_video]:
+        if os.path.exists(f):
+            os.remove(f)
+
+    if result.returncode != 0:
+        print(f"   ❌ FFmpeg Step B error:\n{result.stderr[-500:]}")
+        return None
+
+    elapsed = time.time() - start
+    print(f"   ✅ {output_name} ({elapsed:.1f}s)")
+    return output_path
+
 
 def main():
     setup_ollama()
@@ -777,6 +889,18 @@ def main():
         video_width=1920, video_height=1080,
     )
 
+    # ── Step 7: Generate Videos ──
+    print(f"\n🎬 Step 7: Generating videos...")
+
+    video_9x16 = generate_video(
+        audio_path, ass_9x16, dir_path,
+        "07_final_9x16.mp4", 1080, 1920,
+    )
+    video_16x9 = generate_video(
+        audio_path, ass_16x9, dir_path,
+        "07_final_16x9.mp4", 1920, 1080,
+    )
+
     # ── Done ──
     print(f"\n✅ Done! Output in {dir_path}/")
     print(f"   📄 01_cleaned.txt            — cleaned source text")
@@ -791,6 +915,10 @@ def main():
     print(f"   📄 05_subtitle_chunks.json   — 5-word subtitle groups")
     print(f"   📄 06_subtitles_9x16.ass     — subtitles for TikTok/Reels")
     print(f"   📄 06_subtitles_16x9.ass     — subtitles for YouTube")
+    if video_9x16:
+        print(f"   🎬 07_final_9x16.mp4        — TikTok/Reels video")
+    if video_16x9:
+        print(f"   🎬 07_final_16x9.mp4        — YouTube video")
 
 
 if __name__ == "__main__":
