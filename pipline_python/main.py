@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""
+Reddit → TikTok Viral Script Pipeline
+Scrape → Clean → Rewrite (Ollama)
+"""
+
+import atexit
+import json
+import os
+import random
+import re
+import subprocess
+import time
+
+import ollama as ollama_lib
+import requests
+
+# =========================
+# CONFIG
+# =========================
+
+REDDIT_BASE_URL = "https://www.reddit.com"
+REDDIT_SUBS = [
+    "AmItheAsshole",
+    "relationship_advice",
+    "TrueOffMyChest",
+    "confessions",
+    "TIFU",
+    "EntitledParents",
+    "ChoosingBeggars",
+    "antiwork",
+    "MaliciousCompliance",
+]
+ROOT_ASSETS_PATH = "./assets"
+CONTENT_PATH = "content.json"
+RUN_TIMESTAMP = int(time.time() * 1000)
+
+OLLAMA_URL = "http://localhost:11434"
+# Model options — try these in order until you find one you like:
+# "gemma3:12b"                       — best instruction following + creative, fits easily
+# "mistral:7b-instruct-v0.3-q8_0"   — excellent at dramatic writing
+# "llama3.1:70b-instruct-q4_K_M"    — best overall quality, slower (fits 48GB)
+# "llama3.1:8b-instruct-q8_0"       — fast, decent baseline
+
+OLLAMA_MODEL = "gemma3:12b"
+# OLLAMA_MODEL = "llama3.1:8b-instruct-q8_0"
+# OLLAMA_MODEL = "llama3.1:70b-instruct-q4_K_M"
+# OLLAMA_MODEL = "mistral:7b-instruct-v0.3-q8_0"
+
+ollama_process = None
+started_by_script = False
+
+
+# =========================
+# OLLAMA MANAGEMENT
+# =========================
+
+def is_ollama_running():
+    try:
+        requests.get(OLLAMA_URL)
+        return True
+    except:
+        return False
+
+
+def start_ollama():
+    global started_by_script
+
+    if is_ollama_running():
+        print("⚡ Ollama already running")
+        return None
+
+    print("🚀 Starting Ollama...")
+    process = subprocess.Popen(
+        ["ollama", "serve"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        env={
+            **os.environ,
+            "OLLAMA_METAL": "1",
+            "OLLAMA_MAX_LOADED_MODELS": "1",
+            "OLLAMA_NUM_PARALLEL": "1",
+        },
+    )
+    started_by_script = True
+
+    for _ in range(30):
+        if is_ollama_running():
+            print("✅ Ollama ready")
+            return process
+        time.sleep(0.5)
+
+    raise RuntimeError("❌ Ollama failed to start")
+
+
+def stop_ollama(process):
+    if process and started_by_script:
+        print("🛑 Stopping Ollama...")
+        process.terminate()
+
+
+def ensure_model():
+    try:
+        ollama_lib.show(OLLAMA_MODEL)
+    except:
+        print("⬇️ Pulling model...")
+        subprocess.run(["ollama", "pull", OLLAMA_MODEL])
+
+
+def setup_ollama():
+    global ollama_process
+    ollama_process = start_ollama()
+    ensure_model()
+    atexit.register(lambda: stop_ollama(ollama_process))
+
+
+# =========================
+# REDDIT SCRAPING
+# =========================
+
+def get_raw_content(subs):
+    if not subs:
+        raise ValueError("Subreddit list is empty")
+
+    dir_path = os.path.join(ROOT_ASSETS_PATH, "rawContent")
+    os.makedirs(dir_path, exist_ok=True)
+
+    headers = {"User-Agent": "MyRedditApp/1.0"}
+    responses = []
+    for sub in subs:
+        url = f"{REDDIT_BASE_URL}/r/{sub}/top.json"
+        params = {"limit": 10, "t": "day"}
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        responses.append(res.json())
+
+    all_posts = []
+    for res in responses:
+        children = res.get("data", {}).get("children", [])
+        all_posts.extend([c.get("data", {}) for c in children])
+
+    with open(os.path.join(dir_path, "allPosts.json"), "w", encoding="utf-8") as f:
+        json.dump(all_posts, f, indent=2)
+
+    filtered_posts = [
+        post
+        for post in all_posts
+        if post.get("selftext")
+        and len(post.get("selftext", "")) >= 500
+        and not post.get("stickied", False)
+    ]
+
+    if not filtered_posts:
+        raise ValueError("No suitable posts found")
+
+    filtered_posts.sort(key=lambda x: x.get("score", 0), reverse=True)
+    top_n = filtered_posts[:3]
+    best_post = random.choice(top_n)
+
+    return {
+        "subreddit": best_post.get("subreddit_name_prefixed"),
+        "title": best_post.get("title"),
+        "content": best_post.get("selftext"),
+        "author": best_post.get("author"),
+        "url": REDDIT_BASE_URL + best_post.get("permalink", ""),
+        "score": best_post.get("score"),
+    }
+
+
+# =========================
+# STEP 1: CLEAN TEXT
+# =========================
+
+REMOVE_PATTERNS = [
+    r"(?i)throwaway\s+(account|because).*?[\.\n]",
+    r"(?i)(obligatory\s+)?this\s+(didn'?t|did\s+not)\s+happen\s+today.*?[\.\n]",
+    r"(?i)sorry\s+for\s+(the\s+)?formatting.*?[\.\n]",
+    r"(?i)on\s+mobile.*?[\.\n]",
+    r"(?i)english\s+is\s+not\s+my\s+(first|native)\s+language.*?[\.\n]",
+    r"(?i)using\s+a\s+throwaway.*?[\.\n]",
+    r"(?i)\n*edit\s*\d*\s*:.*?(?=\n\n|\Z)",
+    r"(?i)\n*update\s*\d*\s*:.*?(?=\n\n|\Z)",
+    r"(?i)\n*tl\s*;?\s*dr\s*:?.*?(?=\n\n|\Z)",
+    r"(?i)thanks?\s+for\s+the\s+(gold|silver|awards?).*?[\.\n]",
+    r"(?i)wow\s+this\s+(blew\s+up|got\s+big).*?[\.\n]",
+    r"https?://\S+",
+    r"r/\w+",
+    r"u/\w+",
+]
+
+ABBREVIATIONS = {
+    r"\bAITA\b": "Am I the asshole",
+    r"\bNTA\b": "not the asshole",
+    r"\bYTA\b": "you're the asshole",
+    r"\bTIFU\b": "Today I messed up",
+    r"\bMIL\b": "mother-in-law",
+    r"\bFIL\b": "father-in-law",
+    r"\bSIL\b": "sister-in-law",
+    r"\bBIL\b": "brother-in-law",
+    r"\bSO\b": "significant other",
+    r"\bOP\b": "the original poster",
+    r"\bTBH\b": "to be honest",
+    r"\bIDK\b": "I don't know",
+    r"\bSMH\b": "shaking my head",
+}
+
+
+def clean_text(raw_text):
+    """Strip Reddit formatting, boilerplate, expand abbreviations."""
+    text = raw_text
+
+    for pattern in REMOVE_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.DOTALL)
+
+    # Strip markdown, keep text inside
+    text = re.sub(r"\*\*\*(.*?)\*\*\*", r"\1", text)
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.*?)\*", r"\1", text)
+    text = re.sub(r"~~(.*?)~~", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"^>\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\[(.*?)\]\(.*?\)", r"\1", text)
+    text = re.sub(r"&amp;", "&", text)
+
+    for abbr, expansion in ABBREVIATIONS.items():
+        text = re.sub(abbr, expansion, text)
+
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    return text.strip()
+
+
+# =========================
+# STEP 2: REWRITE WITH LLM
+# =========================
+
+REWRITE_PROMPT = """You are a TikTok storytelling scriptwriter who makes videos go viral. You take Reddit posts and rewrite them as dramatic narration scripts that are impossible to scroll past.
+
+═══ HOOK (FIRST 2 LINES) ═══
+
+The hook is EVERYTHING. If the first line doesn't stop the scroll, nothing else matters.
+
+RULES for the hook:
+- Start with the most SHOCKING or CONFUSING moment from the story, ripped out of context
+- NEVER start with backstory, setup, or "So this happened..."
+- The listener should think "WAIT WHAT?" and need to keep listening
+- After the hook line, add a rewind line like "Let me back up." or "Okay let me explain."
+
+GOOD hooks (study these):
+- "There were 4 strangers inside my house. And I almost walked right into them."
+- "My mother-in-law walked into my bedroom at 7 AM. Without knocking. Without calling. While I was asleep."
+- "I just watched my best friend's wedding video. I'm in it. Except nobody invited me."
+- "My boss just Venmo'd me $1. With the memo: 'Your raise.'"
+- "I found my husband's second phone. The wallpaper was a woman I've never seen. With my kids."
+
+BAD hooks (never do these):
+- "Today my life changed forever..." (generic, boring)
+- "So this is a crazy story..." (tells instead of shows)
+- "You won't believe what happened to me..." (overused, no specifics)
+- "[hook]" or "HOOK:" (never output labels or meta-tags)
+
+═══ PACING & CLIFFHANGERS ═══
+
+Every 3-4 sentences, insert a TENSION BEAT — a line that makes the listener lean in:
+- "But here's the part that still keeps me up at night."
+- "And that's when I looked down and saw it."
+- "Y'all... I was NOT ready for what happened next."
+- "Now this is where the story goes completely off the rails."
+- "And just when I thought it couldn't get worse..."
+
+Use SHORT punchy sentences at high-tension moments:
+"I froze. Dead silent. Four men. In my house."
+
+Use LONGER sentences for scene-setting and building atmosphere.
+
+The LAST LINE of the script must be either:
+- A gut-punch emotional closer ("He saved my life. And he'll never even know it.")
+- A cliffhanger that forces comments ("That was six months ago. She still hasn't spoken to me.")
+- A dark irony callback to the hook ("Remember that white van? It's parked outside again.")
+- A twist reframe ("Turns out, he wasn't protecting me from them. He was protecting them from what I would've done.")
+
+IMPORTANT: Vary your closers. Do NOT fall back on the same pattern every time (e.g. never repeatedly use "And the worst part?" as a closer — find a fresh angle for each story).
+
+═══ AUDIO CUES ═══
+
+Insert these cues EXACTLY as written (lowercase, in brackets). These control how the TTS reads the script.
+
+Pacing cues — use between sentences:
+[pause] — short 1-second beat. Use after a setup line, before a punchline.
+[long pause] — 2 seconds. Use after a revelation that needs to sink in.
+[dramatic pause] — 2 seconds. Use ONLY right before the biggest twist/climax. MAXIMUM ONE PER SCRIPT. If you use [dramatic pause] more than once, you dilute its power and it means nothing. Pick the single most important moment and save it for that.
+
+Voice cues — wrap around text:
+[whisper]text here[/whisper] — secrets, creepy details, confessions
+[loud]text here[/loud] — arguments, confrontations, shock reactions
+[speed up]text here[/speed up] — panic, urgency, things spiraling fast
+[slow]text here[/slow] — weight, emphasis, devastating realizations
+
+Reaction cues — standalone on their own line:
+[gasp]
+[sigh]
+[laugh]
+
+Sound effects — standalone (must match the actual scene, don't add random sfx):
+[sfx: phone buzzing]
+[sfx: door slam]
+[sfx: police sirens]
+
+CUE PLACEMENT RULES:
+- Every script should have at LEAST 8-10 cues total
+- Place [pause] after EVERY hook line and cliffhanger line
+- Place [dramatic pause] exactly ONCE per script — this is the nuclear option, save it for the single biggest reveal. Using it twice or more is a hard rule violation.
+- Use [whisper] for the scariest or most intimate detail
+- Use [loud] for confrontations or the moment everything explodes
+- Reaction cues ([gasp], [sigh]) go on their OWN line, between sentences
+- NEVER output invalid cues like [hook], [Loud], [PAUSE], [dramatic]. Use ONLY the exact cues listed above.
+
+═══ TONE ═══
+
+Write like you're breathlessly telling this story to your best friend at 2 AM.
+- Contractions always: "I'm", "didn't", "couldn't", "wouldn't"
+- Rhetorical questions to pull the listener in: "Like, who DOES that?"
+- Second person to make it feel personal: "Imagine YOU walk up to your front door and hear voices inside."
+- Emotional reactions embedded in the narration: "My hands were literally shaking."
+- NEVER use: "furthermore", "however", "additionally", "indeed", "moreover"
+
+═══ STRUCTURE ═══
+
+Follow this arc for every script:
+1. HOOK — shocking moment, out of context (2 lines)
+2. REWIND — "Let me explain" / quick setup (3-4 lines)
+3. RISING TENSION — things start going wrong, build dread (5-6 lines)
+4. CLIMAX — the moment everything hits the fan (3-4 lines)
+5. FALLOUT — aftermath, emotional reaction (2-3 lines)
+6. CLOSER — gut-punch final line or cliffhanger (1-2 lines)
+
+═══ ABSOLUTE FORMAT RULES ═══
+
+- Output ONLY the narration script. Nothing else.
+- One sentence per line.
+- Audio cues either inline with text OR on their own line.
+- NEVER output labels, headers, section names, or meta-commentary like "[hook]", "HOOK:", "Opening:", "Section 1", "Here's the rewrite".
+- NEVER number the lines.
+- NEVER add stage directions in parentheses like (narrator whispers).
+- NEVER explain what you're doing. Just write the script.
+- The very first character of your output should be the first word of the hook sentence."""
+
+
+def rewrite_dramatic(cleaned_text, title="", temperature=0.9):
+    """Send full cleaned text to Ollama for dramatic rewrite."""
+    user_msg = (
+        f"TITLE: {title}\n\n"
+        f"ORIGINAL POST:\n{cleaned_text}\n\n"
+        "Rewrite this as a viral TikTok narration script. "
+        "Do NOT just retell the story — TRANSFORM it. "
+        "Restructure the timeline, punch up the drama, add tension beats and audio cues. "
+        "Start output directly with the hook sentence — no labels, no headers."
+    )
+
+    print(f"\n⚡ Rewriting (temp={temperature})...")
+    print("─" * 50)
+
+    result = ""
+    stream = ollama_lib.chat(
+        model=OLLAMA_MODEL,
+        messages=[
+            {"role": "system", "content": REWRITE_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        options={
+            "temperature": temperature,
+            "top_p": 0.92,
+            "num_ctx": 8192,
+            "repeat_penalty": 1.2,
+        },
+        stream=True,
+    )
+
+    for chunk in stream:
+        token = chunk["message"]["content"]
+        print(token, end="", flush=True)
+        result += token
+
+    print("\n" + "─" * 50)
+    return result.strip()
+
+
+# =========================
+# MAIN
+# =========================
+
+def main():
+    setup_ollama()
+
+    dir_path = os.path.join(ROOT_ASSETS_PATH, str(RUN_TIMESTAMP))
+    os.makedirs(dir_path, exist_ok=True)
+
+    content_path = os.path.join(dir_path, CONTENT_PATH)
+
+    # Uncomment to fetch live from Reddit:
+    # rawContent = get_raw_content(REDDIT_SUBS)
+    # with open(content_path, "w", encoding="utf-8") as f:
+    #     json.dump(rawContent, f, indent=2)
+
+    rawContent = {
+        "subreddit": "r/TrueOffMyChest",
+        "title": "My dad's best friend probably saved my life today and I'm so freaking grateful for it",
+        "content": "Earlier today I was walking home from school when uncle George passed by in his car, he saw me and he told me to get in, he's not my biological uncle but he's my dad's childhood best friend and he's always been uncle for us, it was hot as fuck today so I got in.\n\nNow my house has two different entrances, one that i normally walk to and one that you drive to in the back, when we got to the back we found a white van parked outside and he told me to wait, none of my parent's cars were home and there were sounds coming from inside, I'm the youngest of my siblings and the only one living at home so honestly it was scary as fuck. Uncle George called the police while I called my dad, 10 minutes later which felt like an eternity the cops showed up and there were 4 guys inside the house and they were stealing, the van was full of our stuff, thankfully we got to keep everything but I was honestly still scared, they were all so much bigger than me, usually when im walking i have my earbuds on playing music so I wouldn't have noticed anything and would have walked straight to them and god knows what would have happened. \n\nI literally could have been raped or even killed if it wasn't for him. I kept thanking him over and over again and dad thanked him as well and he was like it's not a big deal.",
+        "author": "Scary-Grapefruit-988",
+        "url": "https://www.reddit.com/r/TrueOffMyChest/comments/1rzj2pc/my_dads_best_friend_probably_saved_my_life_today/",
+        "score": 2125,
+    }
+
+    # ── Dramatic Rewrite — test across different story types ──
+    test_posts = [
+        rawContent,
+        {
+            "subreddit": "r/AmItheAsshole",
+            "title": "AITA for telling my sister she can't bring her kids to my wedding?",
+            "content": "I (28F) am getting married in September. My sister (34F) has three kids aged 2, 5, and 7. When we sent out invitations, we clearly stated it was a child-free wedding. We're having it at an upscale vineyard with an open bar, and we just don't want kids running around.\n\nMy sister called me FURIOUS. She said I was being selfish and that her kids are family and should be there. I told her that the rule applies to everyone - my fiancé's nieces and nephews aren't coming either. She said that's different because her kids are the flower girl age and could be in the wedding party.\n\nI said no. She started crying and said if her kids can't come, she won't come either. My mom is now calling me every day telling me I'm tearing the family apart and that I should just make an exception for my sister. My dad says it's my wedding and my choice but he'd appreciate it if I kept the peace.\n\nYesterday my sister posted on Facebook about how her own sister doesn't consider her kids family. She tagged me. Now I have aunts and cousins messaging me saying I'm being a bridezilla. My fiancé is 100% on my side but I'm starting to feel like maybe I should just give in. The thing is, if I make an exception for her, three other couples have already been told no kids and it would be unfair.\n\nMy sister and I were really close growing up and this is destroying our relationship. She told my mom that if the kids aren't invited, she's not coming to any family events I host ever again. AITA?",
+            "author": "throwaway_wedding99",
+            "url": "",
+            "score": 8432,
+        },
+        {
+            "subreddit": "r/MaliciousCompliance",
+            "title": "Boss said I can't leave until my replacement arrives. So I stayed. For 3 days.",
+            "content": "This happened a few years ago when I worked at a 24/7 gas station. I was working the overnight shift, 11pm to 7am. My replacement was supposed to come in at 7am but they didn't show up. I called my manager and he said, and I quote, 'You cannot leave that store until your replacement arrives. I don't care what you have to do.'\n\nSo I stayed. 7am turned into noon. Noon turned into 5pm. I kept calling my manager and he kept saying the same thing - don't leave until someone comes. He said he was trying to find coverage but no one was answering their phones.\n\nBy 11pm I had been there for 24 hours straight. The next overnight person was supposed to come in but guess what - they called out sick. Manager still said don't leave. At this point I'm running on energy drinks and spite.\n\nI stayed through the second night. Then through the next morning. Then through the next afternoon. 72 hours. Three full days in a gas station. I slept on the floor in the back room during slow periods. I ate everything from the hot dog roller and drank enough coffee to kill a horse.\n\nWhen my manager finally came in on day 3 he was shocked I was still there. I handed him an overtime sheet for 56 hours of overtime at time-and-a-half. His face went white. He tried to argue that I should have just left but I pulled up his texts telling me I couldn't leave. \n\nCorporate got involved. My manager got written up for labor violations. I got a check for over $4,000 in overtime. And then I put in my two weeks because screw that place.\n\nThe best part? They had to pay me for all of it because my manager's texts were proof he ordered me to stay. HR was NOT happy with him.",
+            "author": "gasstation_warrior",
+            "url": "",
+            "score": 24500,
+        },
+        {
+            "subreddit": "r/TIFU",
+            "title": "TIFU by accidentally sending my therapist a meme about therapy instead of my friend",
+            "content": "So this happened literally 30 minutes ago and I'm still dying of embarrassment. I (26M) have been seeing a therapist for about 6 months for anxiety. She's great and has really helped me a lot.\n\nToday after my session I was texting my best friend about how therapy went. My friend and I have a running joke where we send each other the most unhinged therapy memes we can find. The one I found today was a picture that said 'My therapist: And how does that make you feel? Me: Like I'm paying $200 an hour to talk to someone who can't even fix their own life' with a laughing crying emoji.\n\nYou can probably see where this is going. I sent it to my therapist instead of my friend. The text showed as delivered. Then read. Then I saw the three dots appear. Then disappear. Then appear again. Then disappear.\n\nI immediately sent a follow up saying 'OMG THAT WAS NOT MEANT FOR YOU I AM SO SORRY' and she responded with 'Haha no worries, I've seen that one before. But just so you know, my life is VERY together, thank you very much 😂'\n\nNow I have to go back and sit in that chair next week and look her in the eye. My friend thinks it's the funniest thing that's ever happened to me. I'm considering changing my name and moving to another country.\n\nThe worst part is the meme isn't even that funny. Like it's a solid 6/10 meme at best and now my therapist probably thinks I have terrible taste in memes on top of everything else she knows about me.",
+            "author": "therapy_meme_fail",
+            "url": "",
+            "score": 41200,
+        },
+    ]
+
+    for i, post in enumerate(test_posts):
+        title = post["title"]
+        body = post["content"]
+
+        print(f"\n{'='*60}")
+        print(f"📌 Post {i+1}/{len(test_posts)}: {title[:60]}...")
+        print(f"   From: {post['subreddit']} | ↑{post['score']}")
+        print(f"   Length: {len(body)} chars")
+        print(f"{'='*60}")
+
+        cleaned = clean_text(body)
+        print(f"\n📝 Cleaned: {len(body)} → {len(cleaned)} chars")
+
+        dramatic = rewrite_dramatic(cleaned, title, temperature=0.9)
+
+        filename = f"02_post{i+1}_dramatic.txt"
+        with open(os.path.join(dir_path, filename), "w", encoding="utf-8") as f:
+            f.write(
+                f"ORIGINAL: {title}\nSUBREDDIT: {post['subreddit']}\n{'─'*40}\n\n{dramatic}")
+
+    print(f"\n✅ Done! All outputs in {dir_path}/")
+    for i in range(len(test_posts)):
+        print(f"   📄 02_post{i+1}_dramatic.txt")
+
+
+if __name__ == "__main__":
+    main()
