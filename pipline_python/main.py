@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reddit → TikTok Viral Script Pipeline
-Scrape → Clean → Rewrite (Ollama) → Format → Generate Audio (Kokoro)
+Scrape → Clean → Rewrite (Ollama) → Format → Audio (Kokoro) → Word Timestamps (Whisper)
 """
 
 import atexit
@@ -19,6 +19,7 @@ import numpy as np
 import soundfile as sf
 from kokoro import KPipeline
 
+from faster_whisper import WhisperModel
 # =========================
 # CONFIG
 # =========================
@@ -509,6 +510,56 @@ def generate_audio(tts_lines, dir_path, voice=None):
 
 
 # =========================
+# STEP 5: WORD TIMESTAMPS
+# =========================
+
+def extract_word_timestamps(audio_path, model_size="base"):
+    """Run faster-whisper on audio and return word-level timestamps."""
+
+    print(f"\n🎯 Step 5: Extracting word timestamps...")
+    print(f"   Model: {model_size}")
+
+    start = time.time()
+    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+
+    segments, _ = model.transcribe(
+        audio_path,
+        word_timestamps=True,
+        language="en",
+    )
+
+    words = []
+    for segment in segments:
+        for word in segment.words:
+            words.append({
+                "word": word.word.strip(),
+                "start": round(word.start, 3),
+                "end": round(word.end, 3),
+            })
+
+    elapsed = time.time() - start
+    print(f"   Words: {len(words)}")
+    print(f"   Processed: {elapsed:.1f}s")
+
+    return words
+
+
+def group_words_into_chunks(words, words_per_chunk=5):
+    """Group words into display chunks of N words for subtitle display."""
+    chunks = []
+    for i in range(0, len(words), words_per_chunk):
+        group = words[i:i + words_per_chunk]
+        chunks.append({
+            "index": len(chunks),
+            "text": " ".join(w["word"] for w in group),
+            "start": group[0]["start"],
+            "end": group[-1]["end"],
+            "words": group,
+        })
+    return chunks
+
+
+# =========================
 # MAIN
 # =========================
 
@@ -601,17 +652,30 @@ def main():
     # ── Step 4: Generate Audio ──
     audio_path, voice_used = generate_audio(tts_lines, dir_path)
 
+    # ── Step 5: Word Timestamps ──
+    words = extract_word_timestamps(audio_path)
+    chunks = group_words_into_chunks(words, words_per_chunk=5)
+    print(f"   Chunks: {len(chunks)} (5 words each)")
+
+    with open(os.path.join(dir_path, "05_word_timestamps.json"), "w", encoding="utf-8") as f:
+        json.dump(words, f, indent=2)
+
+    with open(os.path.join(dir_path, "05_subtitle_chunks.json"), "w", encoding="utf-8") as f:
+        json.dump(chunks, f, indent=2)
+
     # ── Done ──
     print(f"\n✅ Done! Output in {dir_path}/")
-    print(f"   📄 01_cleaned.txt         — cleaned source text")
-    print(f"   📄 02_dramatic.txt        — LLM rewrite")
-    print(f"   📄 03_tts_script_raw.txt  — TTS RAW OUTPUT")
-    print(f"   📄 03_tts_script.txt      — TTS script with audio cues")
-    print(f"   📄 03_tts_clean.txt       — clean text only (no cues)")
-    print(f"   📄 03_tts_data.json       — structured data for TTS pipeline")
-    print(f"   🔊 04_narration.wav       — audio narration ({voice_used})")
-    print(f"   📄 04_audio_meta.json     — audio metadata")
+    print(f"   📄 01_cleaned.txt            — cleaned source text")
+    print(f"   📄 02_dramatic.txt           — LLM rewrite")
+    print(f"   📄 03_tts_script_raw.txt     — TTS RAW OUTPUT")
+    print(f"   📄 03_tts_script.txt         — TTS script with audio cues")
+    print(f"   📄 03_tts_clean.txt          — clean text only (no cues)")
+    print(f"   📄 03_tts_data.json          — structured data for TTS pipeline")
+    print(f"   🔊 04_narration.wav          — audio narration ({voice_used})")
+    print(f"   📄 04_audio_meta.json        — audio metadata")
     print(f"   📄 04 audio path     — audio metadata", audio_path)
+    print(f"   📄 05_word_timestamps.json   — per-word timing")
+    print(f"   📄 05_subtitle_chunks.json   — 5-word subtitle groups")
 
 
 if __name__ == "__main__":
