@@ -386,6 +386,69 @@ def rewrite_dramatic(cleaned_text, title="", temperature=0.9):
 
 
 # =========================
+# STEP 3: FORMAT FOR TTS
+# =========================
+
+CUE_PATTERN = (
+    r"\[(?:pause|long pause|dramatic pause|whisper|/whisper|loud|/loud|"
+    r"speed up|/speed up|slow|/slow|gasp|sigh|laugh|sfx:[^\]]*)\]"
+)
+
+
+def format_for_tts(script):
+    """
+    Parse dramatic script into structured TTS-ready lines.
+    Each line gets: index, raw text with cues, clean text, extracted cues.
+    Standalone cue lines get attached to the previous spoken line.
+    """
+    lines = []
+    idx = 0
+
+    for raw_line in script.split("\n"):
+        raw_line = raw_line.strip()
+        if not raw_line:
+            continue
+
+        cues = re.findall(CUE_PATTERN, raw_line, re.IGNORECASE)
+        clean = re.sub(CUE_PATTERN + r"\s*", "", raw_line, flags=re.IGNORECASE)
+        clean = re.sub(r"\s+", " ", clean).strip()
+
+        # Standalone cue line → attach to previous spoken line
+        if not clean:
+            if lines:
+                lines[-1]["cues"].extend(cues)
+            continue
+
+        idx += 1
+        lines.append({
+            "index": idx,
+            "text_with_cues": raw_line,
+            "text_clean": clean,
+            "cues": cues,
+        })
+
+    return lines
+
+
+def estimate_duration(tts_lines, wpm=160):
+    """Rough narration duration in seconds (words + pause cues)."""
+    words = sum(len(l["text_clean"].split()) for l in tts_lines)
+    base = (words / wpm) * 60
+
+    pause_time = 0
+    for l in tts_lines:
+        for cue in l["cues"]:
+            if "long pause" in cue or "dramatic pause" in cue:
+                pause_time += 2.0
+            elif "pause" in cue:
+                pause_time += 0.8
+            elif cue in ("[gasp]", "[sigh]", "[laugh]"):
+                pause_time += 0.5
+
+    return round(base + pause_time, 1)
+
+
+# =========================
 # MAIN
 # =========================
 
@@ -411,58 +474,78 @@ def main():
         "score": 2125,
     }
 
-    # ── Dramatic Rewrite — test across different story types ──
-    test_posts = [
-        rawContent,
-        {
-            "subreddit": "r/AmItheAsshole",
-            "title": "AITA for telling my sister she can't bring her kids to my wedding?",
-            "content": "I (28F) am getting married in September. My sister (34F) has three kids aged 2, 5, and 7. When we sent out invitations, we clearly stated it was a child-free wedding. We're having it at an upscale vineyard with an open bar, and we just don't want kids running around.\n\nMy sister called me FURIOUS. She said I was being selfish and that her kids are family and should be there. I told her that the rule applies to everyone - my fiancé's nieces and nephews aren't coming either. She said that's different because her kids are the flower girl age and could be in the wedding party.\n\nI said no. She started crying and said if her kids can't come, she won't come either. My mom is now calling me every day telling me I'm tearing the family apart and that I should just make an exception for my sister. My dad says it's my wedding and my choice but he'd appreciate it if I kept the peace.\n\nYesterday my sister posted on Facebook about how her own sister doesn't consider her kids family. She tagged me. Now I have aunts and cousins messaging me saying I'm being a bridezilla. My fiancé is 100% on my side but I'm starting to feel like maybe I should just give in. The thing is, if I make an exception for her, three other couples have already been told no kids and it would be unfair.\n\nMy sister and I were really close growing up and this is destroying our relationship. She told my mom that if the kids aren't invited, she's not coming to any family events I host ever again. AITA?",
-            "author": "throwaway_wedding99",
-            "url": "",
-            "score": 8432,
-        },
-        {
-            "subreddit": "r/MaliciousCompliance",
-            "title": "Boss said I can't leave until my replacement arrives. So I stayed. For 3 days.",
-            "content": "This happened a few years ago when I worked at a 24/7 gas station. I was working the overnight shift, 11pm to 7am. My replacement was supposed to come in at 7am but they didn't show up. I called my manager and he said, and I quote, 'You cannot leave that store until your replacement arrives. I don't care what you have to do.'\n\nSo I stayed. 7am turned into noon. Noon turned into 5pm. I kept calling my manager and he kept saying the same thing - don't leave until someone comes. He said he was trying to find coverage but no one was answering their phones.\n\nBy 11pm I had been there for 24 hours straight. The next overnight person was supposed to come in but guess what - they called out sick. Manager still said don't leave. At this point I'm running on energy drinks and spite.\n\nI stayed through the second night. Then through the next morning. Then through the next afternoon. 72 hours. Three full days in a gas station. I slept on the floor in the back room during slow periods. I ate everything from the hot dog roller and drank enough coffee to kill a horse.\n\nWhen my manager finally came in on day 3 he was shocked I was still there. I handed him an overtime sheet for 56 hours of overtime at time-and-a-half. His face went white. He tried to argue that I should have just left but I pulled up his texts telling me I couldn't leave. \n\nCorporate got involved. My manager got written up for labor violations. I got a check for over $4,000 in overtime. And then I put in my two weeks because screw that place.\n\nThe best part? They had to pay me for all of it because my manager's texts were proof he ordered me to stay. HR was NOT happy with him.",
-            "author": "gasstation_warrior",
-            "url": "",
-            "score": 24500,
-        },
-        {
-            "subreddit": "r/TIFU",
-            "title": "TIFU by accidentally sending my therapist a meme about therapy instead of my friend",
-            "content": "So this happened literally 30 minutes ago and I'm still dying of embarrassment. I (26M) have been seeing a therapist for about 6 months for anxiety. She's great and has really helped me a lot.\n\nToday after my session I was texting my best friend about how therapy went. My friend and I have a running joke where we send each other the most unhinged therapy memes we can find. The one I found today was a picture that said 'My therapist: And how does that make you feel? Me: Like I'm paying $200 an hour to talk to someone who can't even fix their own life' with a laughing crying emoji.\n\nYou can probably see where this is going. I sent it to my therapist instead of my friend. The text showed as delivered. Then read. Then I saw the three dots appear. Then disappear. Then appear again. Then disappear.\n\nI immediately sent a follow up saying 'OMG THAT WAS NOT MEANT FOR YOU I AM SO SORRY' and she responded with 'Haha no worries, I've seen that one before. But just so you know, my life is VERY together, thank you very much 😂'\n\nNow I have to go back and sit in that chair next week and look her in the eye. My friend thinks it's the funniest thing that's ever happened to me. I'm considering changing my name and moving to another country.\n\nThe worst part is the meme isn't even that funny. Like it's a solid 6/10 meme at best and now my therapist probably thinks I have terrible taste in memes on top of everything else she knows about me.",
-            "author": "therapy_meme_fail",
-            "url": "",
-            "score": 41200,
-        },
-    ]
+    title = rawContent["title"]
+    body = rawContent["content"]
 
-    for i, post in enumerate(test_posts):
-        title = post["title"]
-        body = post["content"]
+    print(f"\n📌 Post: {title}")
+    print(f"   From: {rawContent['subreddit']} | ↑{rawContent['score']}")
+    print(f"   Length: {len(body)} chars\n")
 
-        print(f"\n{'='*60}")
-        print(f"📌 Post {i+1}/{len(test_posts)}: {title[:60]}...")
-        print(f"   From: {post['subreddit']} | ↑{post['score']}")
-        print(f"   Length: {len(body)} chars")
-        print(f"{'='*60}")
+    # ── Step 1: Clean ──
+    print("📝 Step 1: Cleaning...")
+    cleaned = clean_text(body)
+    print(
+        f"   {len(body)} → {len(cleaned)} chars ({len(body) - len(cleaned)} removed)\n")
 
-        cleaned = clean_text(body)
-        print(f"\n📝 Cleaned: {len(body)} → {len(cleaned)} chars")
+    with open(os.path.join(dir_path, "01_cleaned.txt"), "w", encoding="utf-8") as f:
+        f.write(cleaned)
 
-        dramatic = rewrite_dramatic(cleaned, title, temperature=0.9)
+    # ── Step 2: Dramatic Rewrite ──
+    dramatic = rewrite_dramatic(cleaned, title, temperature=0.9)
 
-        filename = f"02_post{i+1}_dramatic.txt"
-        with open(os.path.join(dir_path, filename), "w", encoding="utf-8") as f:
-            f.write(
-                f"ORIGINAL: {title}\nSUBREDDIT: {post['subreddit']}\n{'─'*40}\n\n{dramatic}")
+    with open(os.path.join(dir_path, "02_dramatic.txt"), "w", encoding="utf-8") as f:
+        f.write(dramatic)
 
-    print(f"\n✅ Done! All outputs in {dir_path}/")
-    for i in range(len(test_posts)):
-        print(f"   📄 02_post{i+1}_dramatic.txt")
+    # ── Step 3: Format for TTS ──
+    print("\n🎙️  Step 3: Formatting for TTS...")
+    tts_lines = format_for_tts(dramatic)
+    duration = estimate_duration(tts_lines)
+    word_count = sum(len(l["text_clean"].split()) for l in tts_lines)
+    all_cues = [c for l in tts_lines for c in l["cues"]]
+
+    print(f"   Lines:    {len(tts_lines)}")
+    print(f"   Words:    {word_count}")
+    print(f"   Duration: ~{int(duration // 60)}:{int(duration % 60):02d}")
+    print(f"   Cues:     {len(all_cues)}")
+
+    # RAW TTS LINES
+    with open(os.path.join(dir_path, "03_tts_script_raw.txt"), "w", encoding="utf-8") as f:
+        json.dump(tts_lines, f, indent=2)
+
+    # Script with cues (for review / cue-aware TTS)
+    with open(os.path.join(dir_path, "03_tts_script.txt"), "w", encoding="utf-8") as f:
+        for l in tts_lines:
+            f.write(l["text_with_cues"] + "\n")
+
+    # Clean text only (for TTS models that don't understand cues)
+    with open(os.path.join(dir_path, "03_tts_clean.txt"), "w", encoding="utf-8") as f:
+        for l in tts_lines:
+            f.write(l["text_clean"] + "\n")
+
+    # Structured JSON (for programmatic TTS pipelines)
+    with open(os.path.join(dir_path, "03_tts_data.json"), "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "title": title,
+                "subreddit": rawContent["subreddit"],
+                "total_lines": len(tts_lines),
+                "word_count": word_count,
+                "estimated_duration_seconds": duration,
+                "lines": tts_lines,
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
+
+    # ── Done ──
+    print(f"\n✅ Done! Output in {dir_path}/")
+    print(f"   📄 01_cleaned.txt     — cleaned source text")
+    print(f"   📄 02_dramatic.txt    — LLM rewrite")
+    print(f"   📄 03_tts_script_raw.txt  — TTS RAW OUTPUT")
+    print(f"   📄 03_tts_script.txt  — TTS script with audio cues")
+    print(f"   📄 03_tts_clean.txt   — clean text only (no cues)")
+    print(f"   📄 03_tts_data.json   — structured data for TTS pipeline")
 
 
 if __name__ == "__main__":

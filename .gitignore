@@ -2,3 +2,6 @@ node_modules
 .env
 assets
 **/venv
+**/chatterbox
+**/tts_comparison_**/
+**/voice_audition
