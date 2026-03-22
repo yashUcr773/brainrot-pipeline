@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Reddit → TikTok Viral Script Pipeline
-Scrape → Clean → Rewrite (Ollama)
+Scrape → Clean → Rewrite (Ollama) → Format → Generate Audio (Kokoro)
 """
 
 import atexit
@@ -14,6 +14,10 @@ import time
 
 import ollama as ollama_lib
 import requests
+
+import numpy as np
+import soundfile as sf
+from kokoro import KPipeline
 
 # =========================
 # CONFIG
@@ -49,6 +53,16 @@ OLLAMA_MODEL = "gemma3:12b"
 
 ollama_process = None
 started_by_script = False
+
+# =========================
+# KOKORO CONFIG
+# =========================
+
+KOKORO_VOICES = [
+    "af_heart", "af_bella", "af_sarah", "af_nicole",
+    "af_nova", "af_sky", "af_jessica", "af_river",
+    "am_adam", "am_michael", "bm_george", "bm_lewis",
+]
 
 
 # =========================
@@ -449,6 +463,52 @@ def estimate_duration(tts_lines, wpm=160):
 
 
 # =========================
+# STEP 4: GENERATE AUDIO (KOKORO)
+# =========================
+
+def generate_audio(tts_lines, dir_path, voice=None):
+    """Generate audio from clean TTS lines using Kokoro."""
+
+    if voice is None:
+        voice = random.choice(KOKORO_VOICES)
+
+    print(f"\n🔊 Step 4: Generating audio with Kokoro...")
+    print(f"   Voice: {voice}")
+
+    pipeline = KPipeline(lang_code="a")
+
+    # Join clean lines into one text block
+    full_text = "\n".join(l["text_clean"] for l in tts_lines)
+
+    start = time.time()
+    audio_chunks = []
+    for _, _, audio in pipeline(full_text, voice=voice, speed=1, split_pattern=r'\n+'):
+        audio_chunks.append(audio)
+
+    full_audio = np.concatenate(audio_chunks)
+    elapsed = time.time() - start
+
+    out_path = os.path.join(dir_path, "04_narration.wav")
+    sf.write(out_path, full_audio, 24000)
+
+    duration = len(full_audio) / 24000
+    print(f"   Duration: {int(duration // 60)}:{int(duration % 60):02d}")
+    print(f"   Generated in {elapsed:.1f}s")
+
+    # Save metadata
+    meta = {
+        "voice": voice,
+        "duration_seconds": round(duration, 1),
+        "generation_time_seconds": round(elapsed, 1),
+        "sample_rate": 24000,
+    }
+    with open(os.path.join(dir_path, "04_audio_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)
+
+    return out_path, voice
+
+
+# =========================
 # MAIN
 # =========================
 
@@ -538,14 +598,20 @@ def main():
             ensure_ascii=False,
         )
 
+    # ── Step 4: Generate Audio ──
+    audio_path, voice_used = generate_audio(tts_lines, dir_path)
+
     # ── Done ──
     print(f"\n✅ Done! Output in {dir_path}/")
-    print(f"   📄 01_cleaned.txt     — cleaned source text")
-    print(f"   📄 02_dramatic.txt    — LLM rewrite")
+    print(f"   📄 01_cleaned.txt         — cleaned source text")
+    print(f"   📄 02_dramatic.txt        — LLM rewrite")
     print(f"   📄 03_tts_script_raw.txt  — TTS RAW OUTPUT")
-    print(f"   📄 03_tts_script.txt  — TTS script with audio cues")
-    print(f"   📄 03_tts_clean.txt   — clean text only (no cues)")
-    print(f"   📄 03_tts_data.json   — structured data for TTS pipeline")
+    print(f"   📄 03_tts_script.txt      — TTS script with audio cues")
+    print(f"   📄 03_tts_clean.txt       — clean text only (no cues)")
+    print(f"   📄 03_tts_data.json       — structured data for TTS pipeline")
+    print(f"   🔊 04_narration.wav       — audio narration ({voice_used})")
+    print(f"   📄 04_audio_meta.json     — audio metadata")
+    print(f"   📄 04 audio path     — audio metadata", audio_path)
 
 
 if __name__ == "__main__":
