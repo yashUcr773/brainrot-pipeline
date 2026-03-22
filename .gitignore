@@ -5,3 +5,4 @@ assets
 **/chatterbox
 **/tts_comparison_**/
 **/voice_audition
+__pycache__
