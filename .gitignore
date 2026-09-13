@@ -1,6 +1,8 @@
-outputs/
-scripts/
-input/
-temp/
-node_modules/
+node_modules
 .env
+assets
+**/venv
+**/chatterbox
+**/tts_comparison_**/
+**/voice_audition
+__pycache__
